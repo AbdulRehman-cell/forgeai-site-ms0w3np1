@@ -1,0 +1,19 @@
+# .dockerignore — keep the build context and final image minimal
+
+.git
+.github
+.gitignore
+.env
+.env.*
+!.env.example
+DEPLOY.md
+README.md
+*.md
+node_modules
+npm-debug.log
+.DS_Store
+Thumbs.db
+docker-compose.yml
+render.yaml
+nginx.conf.bak
+*.log

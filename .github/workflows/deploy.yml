@@ -1,0 +1,96 @@
+name: CI/CD — Build, Validate, Deploy to Render
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE_NAME: care-services-site
+
+jobs:
+  validate:
+    name: Validate static assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify required files exist
+        run: |
+          set -e
+          for f in index.html services.html contact.html residential.html care-plan.html strata-commercial.html script.js styles.css; do
+            if [ ! -f "$f" ]; then
+              echo "Missing required file: $f"
+              exit 1
+            fi
+          done
+          echo "All required static files present."
+
+      - name: HTML sanity check (basic tag balance via tidy)
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y tidy
+          for f in *.html; do
+            echo "Checking $f"
+            tidy -q -e "$f" || true
+          done
+
+      - name: Lint JS (basic syntax check via Node's --check, no deps installed)
+        run: |
+          node --check script.js
+
+  docker-build-test:
+    name: Build Docker image & smoke test
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:ci
+
+      - name: Run container and hit healthcheck
+        run: |
+          docker run -d --name site -p 8080:8080 ${{ env.IMAGE_NAME }}:ci
+          for i in $(seq 1 10); do
+            if curl -fs http://localhost:8080/healthz; then
+              echo "Health check passed"
+              exit 0
+            fi
+            echo "Waiting for container..."
+            sleep 2
+          done
+          echo "Health check failed"
+          docker logs site
+          exit 1
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f site || true
+
+  deploy:
+    name: Deploy to Render
+    runs-on: ubuntu-latest
+    needs: docker-build-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Trigger Render Deploy Hook
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL secret not set. Skipping deploy trigger."
+            exit 1
+          fi
+          curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_URL"
+          echo "Render deploy triggered."
